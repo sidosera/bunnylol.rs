@@ -2,6 +2,7 @@ name: Build Release Artifacts
 
 on:
   push:
+    branches: [ "**" ]
     tags: [ "v*" ]
 
 env:
@@ -13,6 +14,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -48,9 +51,29 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set version from tag
-        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+      - name: Set version from nearest tag and commit offset
+        run: |
+          exact_tag="$(git describe --tags --match "v*" --exact-match 2>/dev/null || true)"
+          if [ -n "$exact_tag" ]; then
+            latest_tag="$exact_tag"
+            offset="0"
+            version="$exact_tag"
+          else
+            latest_tag="$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)"
+            if [ -z "$latest_tag" ]; then
+              latest_tag="v0.0.0"
+              offset="$(git rev-list --count HEAD)"
+            else
+              offset="$(git rev-list --count "${latest_tag}..HEAD")"
+            fi
+            version="${latest_tag}+${offset}"
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "BASE_TAG=${latest_tag}" >> "$GITHUB_ENV"
+          echo "VERSION_OFFSET=${offset}" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -92,6 +115,7 @@ jobs:
           retention-days: 90
 
       - name: Upload to release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
@@ -111,9 +135,29 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set version from tag
-        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+      - name: Set version from nearest tag and commit offset
+        run: |
+          exact_tag="$(git describe --tags --match "v*" --exact-match 2>/dev/null || true)"
+          if [ -n "$exact_tag" ]; then
+            latest_tag="$exact_tag"
+            offset="0"
+            version="$exact_tag"
+          else
+            latest_tag="$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)"
+            if [ -z "$latest_tag" ]; then
+              latest_tag="v0.0.0"
+              offset="$(git rev-list --count HEAD)"
+            else
+              offset="$(git rev-list --count "${latest_tag}..HEAD")"
+            fi
+            version="${latest_tag}+${offset}"
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "BASE_TAG=${latest_tag}" >> "$GITHUB_ENV"
+          echo "VERSION_OFFSET=${offset}" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -178,6 +222,7 @@ jobs:
           retention-days: 90
 
       - name: Upload to release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
