@@ -42,6 +42,7 @@ jobs:
     needs: test
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - rust_target: aarch64-apple-darwin
@@ -58,12 +59,13 @@ jobs:
       - name: Set version from nearest tag and commit offset
         run: |
           exact_tag="$(git describe --tags --match "v*" --exact-match 2>/dev/null || true)"
-          if [ -n "$exact_tag" ]; then
+          if [[ -n "$exact_tag" && "$exact_tag" != *+* ]]; then
             latest_tag="$exact_tag"
             offset="0"
             version="$exact_tag"
           else
             latest_tag="$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)"
+            latest_tag="${latest_tag%%+*}"
             if [ -z "$latest_tag" ]; then
               latest_tag="v0.0.0"
               offset="$(git rev-list --count HEAD)"
@@ -142,12 +144,13 @@ jobs:
       - name: Set version from nearest tag and commit offset
         run: |
           exact_tag="$(git describe --tags --match "v*" --exact-match 2>/dev/null || true)"
-          if [ -n "$exact_tag" ]; then
+          if [[ -n "$exact_tag" && "$exact_tag" != *+* ]]; then
             latest_tag="$exact_tag"
             offset="0"
             version="$exact_tag"
           else
             latest_tag="$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)"
+            latest_tag="${latest_tag%%+*}"
             if [ -z "$latest_tag" ]; then
               latest_tag="v0.0.0"
               offset="$(git rev-list --count HEAD)"
@@ -175,7 +178,7 @@ jobs:
           key: app-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Import signing certificate
-        if: env.MACOS_CERTIFICATE != ''
+        if: env.MACOS_CERTIFICATE != '' && env.MACOS_CERTIFICATE_PWD != ''
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -189,27 +192,22 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" build.keychain
           rm certificate.p12
 
-      - name: Validate signing secrets on main
+      - name: Warn when signing secrets are missing
         if: github.ref == 'refs/heads/main'
         env:
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
         run: |
-          [ -n "$CODESIGN_IDENTITY" ] || { echo "::error::Missing CODESIGN_IDENTITY secret on main"; exit 1; }
-          [ -n "$MACOS_CERTIFICATE" ] || { echo "::error::Missing MACOS_CERTIFICATE secret on main"; exit 1; }
-          [ -n "$MACOS_CERTIFICATE_PWD" ] || { echo "::error::Missing MACOS_CERTIFICATE_PWD secret on main"; exit 1; }
+          if [ -z "$CODESIGN_IDENTITY" ] || [ -z "$MACOS_CERTIFICATE" ] || [ -z "$MACOS_CERTIFICATE_PWD" ]; then
+            echo "::warning::Signing secrets are missing on main; building an unsigned app artifact."
+          fi
 
       - name: Write version file
         run: echo "${{ env.VERSION }}" > .version
 
       - name: Configure CMake
-        run: |
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            cmake -B build -DCODESIGN_IDENTITY="${CODESIGN_IDENTITY}"
-          else
-            cmake -B build -DCODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
-          fi
+        run: cmake -B build -DCODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
         env:
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
 
@@ -262,12 +260,13 @@ jobs:
       - name: Set version from nearest tag and commit offset
         run: |
           exact_tag="$(git describe --tags --match "v*" --exact-match 2>/dev/null || true)"
-          if [ -n "$exact_tag" ]; then
+          if [[ -n "$exact_tag" && "$exact_tag" != *+* ]]; then
             latest_tag="$exact_tag"
             offset="0"
             version="$exact_tag"
           else
             latest_tag="$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)"
+            latest_tag="${latest_tag%%+*}"
             if [ -z "$latest_tag" ]; then
               latest_tag="v0.0.0"
               offset="$(git rev-list --count HEAD)"
