@@ -3,17 +3,17 @@ import CryptoKit
 import SWCompression
 
 @MainActor
-protocol UpdateService {
+protocol ServerRuntimeUpdateService {
     func fetchLatestRelease() async -> ReleaseInfo?
 }
 
-struct DisabledUpdateService: UpdateService {
+struct DisabledUpdateService: ServerRuntimeUpdateService {
     func fetchLatestRelease() async -> ReleaseInfo? {
         nil
     }
 }
 
-final class GistUpdateService: UpdateService {
+final class GistUpdateService: ServerRuntimeUpdateService {
     private let gistURL: URL
     private let manifestFileName: String
     private let userAgent: String

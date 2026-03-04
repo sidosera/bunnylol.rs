@@ -17,8 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var serverSetupState: ServerSetupState = .starting
     var updateState = UpdateState()
     var updateTimer: Timer?
+    var serverWatchdogTimer: Timer?
     var serverProcess: Process?
-    lazy var updateService: any UpdateService = {
+    var isStartingServer = false
+    lazy var updateService: any ServerRuntimeUpdateService = {
         guard let provider = Config.Server.updateProvider else {
             log("missing update provider config")
             return DisabledUpdateService()
@@ -54,7 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_: Notification) {
-        log("app launched, arch=\(architectureLabel()), serverRoot=\(managedServerRoot.path)")
+        let volumePath = Config.Server.volumePath ?? "(default)"
+        log("app launched, arch=\(architectureLabel()), serverRoot=\(managedServerRoot.path), volumePath=\(volumePath)")
         setupStatusBar()
         configureNotificationActions()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { granted, error in
@@ -63,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             await startServer()
         }
+        scheduleServerWatchdog()
         scheduleUpdateChecks()
         runUpdateCheck(force: false, notify: false)
     }

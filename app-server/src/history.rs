@@ -67,7 +67,7 @@ pub struct History {
 impl History {
     /// Create a new history manager
     pub fn new(config: &BunnylolConfig) -> Option<Self> {
-        let path = BunnylolConfig::get_history_path()?;
+        let path = crate::paths::history_file()?;
         Some(Self {
             path,
             max_entries: config.history.max_entries,
