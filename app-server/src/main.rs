@@ -7,7 +7,7 @@
 
 use std::io::{IsTerminal, Read};
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use clap_complete::generate;
 use tabled::{
     Table, Tabled,
@@ -19,7 +19,7 @@ use bunnylol::{BunnylolConfig, History, plugins, utils};
 #[derive(Parser)]
 #[command(name = "lolabunny")]
 #[command(
-    about = "Lightweight local command router that lets you navigate apps, tools, and internal resources with simple commands.",
+    about = "Lightweight local command router that lets you navigate apps, tools, and internal resources with simple commands."
 )]
 #[command(version)]
 #[command(override_usage = "lolabunny [OPTIONS] [BINDING] [ARGS]")]
@@ -34,19 +34,47 @@ struct Cli {
     /// List all available commands
     #[arg(short, long, global = true)]
     list: bool,
+
+    /// Browser to open URLs in (overrides defaults)
+    #[arg(long, global = true)]
+    browser: Option<String>,
+
+    /// Default search engine
+    #[arg(long = "default-search", default_value = "google", global = true)]
+    default_search: String,
+
+    /// Command alias in KEY=VALUE format (can be repeated)
+    #[arg(long = "alias", value_name = "KEY=VALUE", global = true)]
+    aliases: Vec<String>,
+
+    /// Enable/disable command history (true/false)
+    #[arg(long = "history-enabled", default_value_t = true, action = ArgAction::Set, global = true)]
+    history_enabled: bool,
+
+    /// Maximum number of history entries to keep
+    #[arg(long = "history-max-entries", default_value_t = 1000, global = true)]
+    history_max_entries: usize,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// Run the lolabunny web server
     Serve {
-        /// Port to bind the server to (overrides config file)
-        #[arg(short, long)]
-        port: Option<u16>,
+        /// Port to bind the server to
+        #[arg(short, long, default_value_t = 8085)]
+        port: u16,
 
-        /// Address to bind to (overrides config file)
-        #[arg(short, long)]
-        address: Option<String>,
+        /// Address to bind to
+        #[arg(short, long, default_value = "127.0.0.1")]
+        address: String,
+
+        /// Filesystem path for shared volume storage
+        #[arg(long = "volume-path")]
+        volume_path: Option<String>,
+
+        /// Rocket log level
+        #[arg(long = "log-level", default_value = "normal")]
+        log_level: String,
     },
 
     /// List all available command bindings
@@ -76,15 +104,9 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-
-    let config = match BunnylolConfig::load() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("Warning: {}", e);
-            eprintln!("Continuing with default configuration...");
-            BunnylolConfig::default()
-        }
-    };
+    let mut config = BunnylolConfig::default();
+    apply_cli_config_overrides(&mut config, &cli)
+        .map_err(|e| format!("invalid CLI config override: {e}"))?;
 
     if cli.list {
         print_commands();
@@ -92,14 +114,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match cli.command {
-        Some(Commands::Serve { port, address }) => {
+        Some(Commands::Serve {
+            port,
+            address,
+            volume_path,
+            log_level,
+        }) => {
             let mut server_config = config.clone();
-            if let Some(p) = port {
-                server_config.server.port = p;
-            }
-            if let Some(a) = address {
-                server_config.server.address = a;
-            }
+            server_config.server.port = port;
+            server_config.server.address = address;
+            server_config.server.volume_path = volume_path;
+            server_config.server.log_level = log_level;
             bunnylol::server::launch(server_config).await?;
             Ok(())
         }
@@ -187,6 +212,33 @@ fn execute_command(
     Ok(())
 }
 
+fn apply_cli_config_overrides(config: &mut BunnylolConfig, cli: &Cli) -> Result<(), String> {
+    config.browser = cli.browser.clone();
+    config.default_search = cli.default_search.clone();
+    config.history.enabled = cli.history_enabled;
+    config.history.max_entries = cli.history_max_entries;
+    for alias in &cli.aliases {
+        let (key, value) = parse_alias(alias)?;
+        config.aliases.insert(key, value);
+    }
+    Ok(())
+}
+
+fn parse_alias(raw: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = raw.split_once('=') else {
+        return Err(format!("alias must be KEY=VALUE, got '{raw}'"));
+    };
+    let key = key.trim();
+    let value = value.trim();
+    if key.is_empty() {
+        return Err(format!("alias key cannot be empty in '{raw}'"));
+    }
+    if value.is_empty() {
+        return Err(format!("alias value cannot be empty in '{raw}'"));
+    }
+    Ok((key.to_string(), value.to_string()))
+}
+
 fn open_url(url: &str, config: &BunnylolConfig) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(browser) = &config.browser {
         open::with(url, browser).map_err(|e| {
@@ -214,7 +266,10 @@ struct CommandRow {
     example: String,
 }
 
-fn handle_blob(id: Option<&str>, config: &BunnylolConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_blob(
+    id: Option<&str>,
+    config: &BunnylolConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     let base = config.server.get_display_url();
 
     if let Some(id) = id {

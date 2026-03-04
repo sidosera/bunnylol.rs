@@ -34,6 +34,22 @@
     <string></string>
     <key>LolabunnyUpdateProvider.GitHubGist.ManifestFile</key>
     <string>manifest.json</string>
+    <key>LolabunnyServerPort</key>
+    <string>8085</string>
+    <key>LolabunnyServerAddress</key>
+    <string>127.0.0.1</string>
+    <key>LolabunnyServerLogLevel</key>
+    <string>normal</string>
+    <key>LolabunnyDefaultSearch</key>
+    <string>google</string>
+    <key>LolabunnyHistoryEnabled</key>
+    <string>true</string>
+    <key>LolabunnyHistoryMaxEntries</key>
+    <string>1000</string>
+    <key>LolabunnyServerWatchdogIntervalSeconds</key>
+    <string>20</string>
+    <key>LolabunnyVolumePath</key>
+    <string></string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

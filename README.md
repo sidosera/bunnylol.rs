@@ -95,15 +95,17 @@ brew install lola-core
 
 ## Config
 
-```
-~/.config/bunnylol/config.toml
-```
+Passed through command line arguments.
 
-```toml
-default_search = "google"
-
-[server]
-port = 8085
+```sh
+lolabunny serve \
+  --port 8085 \
+  --address 127.0.0.1 \
+  --log-level normal \
+  --default-search google \
+  --history-enabled true \
+  --history-max-entries 1000 \
+  --volume-path "$HOME/.lolabunny"
 ```
 
 

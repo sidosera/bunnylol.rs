@@ -179,6 +179,8 @@ extension AppDelegate {
     }
 
     @objc func quit() {
+        serverWatchdogTimer?.invalidate()
+        updateTimer?.invalidate()
         stopRunningServer()
         NSApp.terminate(nil)
     }

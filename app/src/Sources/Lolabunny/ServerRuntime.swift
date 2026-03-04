@@ -234,7 +234,48 @@ extension AppDelegate {
         return (binary, version)
     }
 
+    func scheduleServerWatchdog() {
+        serverWatchdogTimer?.invalidate()
+        serverWatchdogTimer = Timer.scheduledTimer(
+            withTimeInterval: Config.Server.watchdogIntervalSeconds, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.serverWatchdogTick()
+            }
+        }
+    }
+
+    func serverWatchdogTick() async {
+        if isApplyingServerUpdate || isBootstrappingServer || isStartingServer {
+            return
+        }
+        switch serverSetupState {
+        case .starting, .waitingForDownloadPermission, .downloading:
+            return
+        case .ready, .blocked:
+            break
+        }
+
+        if await probeRunningServerAsync() != nil {
+            return
+        }
+
+        if let pid = readPidFile(), isProcessRunning(pid) {
+            log("watchdog: server pid=\(pid) is unresponsive, restarting")
+            stopRunningServer()
+        } else {
+            log("watchdog: server is not running, starting")
+        }
+        await startServer()
+    }
+
     func startServer() async {
+        guard !isStartingServer else {
+            return
+        }
+        isStartingServer = true
+        defer { isStartingServer = false }
+
         setServerSetupState(.starting)
         allowAutomaticServerDownloads = false
         let requiredMajor = requiredServerMajor()
@@ -246,21 +287,36 @@ extension AppDelegate {
         }
 
         allowAutomaticServerDownloads = true
+        let desiredArgsSignature = serverLaunchArgsSignature()
 
         if let pid = readPidFile(), isProcessRunning(pid), let runningVersion = await probeRunningServerAsync() {
             if runningVersion == target.version {
-                setServerSetupState(.ready(version: target.version))
-                log("target server already running (pid=\(pid), version=\(runningVersion))")
-                return
+                if readRecordedServerLaunchArgsSignature() == desiredArgsSignature {
+                    setServerSetupState(.ready(version: target.version))
+                    log("target server already running (pid=\(pid), version=\(runningVersion))")
+                    return
+                }
+                log("running server version \(runningVersion) has stale launch args, restarting")
+            } else {
+                log("running server version \(runningVersion) differs from target \(target.version), restarting")
             }
-            log("running server version \(runningVersion) differs from target \(target.version), restarting")
             stopRunningServer()
         } else if let pid = readPidFile(), isProcessRunning(pid) {
             log("server pid file exists but health check failed (pid=\(pid)), restarting")
             stopRunningServer()
         }
 
-        launchServerProcess(binary: target.binary, version: target.version)
+        guard launchServerProcess(binary: target.binary, version: target.version) else {
+            setServerSetupState(.blocked(message: "launch failed"))
+            return
+        }
+
+        guard await waitForServerVersion(target.version, timeout: 8) else {
+            log("server failed health check after launch, restarting required")
+            stopRunningServer()
+            setServerSetupState(.blocked(message: "start failed"))
+            return
+        }
         setServerSetupState(.ready(version: target.version))
     }
 
@@ -316,15 +372,56 @@ extension AppDelegate {
         return String(v.prefix(while: { $0 != "." }))
     }
 
-    func launchServerProcess(binary: URL, version: String) {
+    func serverLaunchArguments() -> [String] {
+        var args = [
+            "serve",
+            "--port", "\(Config.serverPort)",
+            "--address", Config.Server.address,
+            "--log-level", Config.Server.logLevel,
+            "--default-search", Config.Server.defaultSearch,
+            "--history-enabled", Config.Server.historyEnabled ? "true" : "false",
+            "--history-max-entries", "\(Config.Server.historyMaxEntries)"
+        ]
+        if let volumePath = Config.Server.volumePath {
+            args += ["--volume-path", volumePath]
+        }
+        return args
+    }
+
+    func serverLaunchArgsSignature() -> String {
+        serverLaunchArguments().joined(separator: "\n")
+    }
+
+    func readRecordedServerLaunchArgsSignature() -> String? {
+        guard let value = try? String(contentsOfFile: Config.Server.launchArgsSignatureFile, encoding: .utf8) else {
+            return nil
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func writeRecordedServerLaunchArgsSignature(_ signature: String) {
+        do {
+            try FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: Config.Server.runtimeDir, isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try signature.write(toFile: Config.Server.launchArgsSignatureFile, atomically: true, encoding: .utf8)
+        } catch {
+            log("failed to write launch args signature: \(error.localizedDescription)")
+        }
+    }
+
+    @discardableResult
+    func launchServerProcess(binary: URL, version: String) -> Bool {
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             log("server binary not found at \(binary.path)")
-            return
+            return false
         }
 
         let proc = Process()
         proc.executableURL = binary
-        proc.arguments = ["serve", "--port", "\(Config.serverPort)"]
+        let args = serverLaunchArguments()
+        proc.arguments = args
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         proc.terminationHandler = { [version] p in
@@ -333,9 +430,12 @@ extension AppDelegate {
         do {
             try proc.run()
             serverProcess = proc
+            writeRecordedServerLaunchArgsSignature(serverLaunchArgsSignature())
             log("server started, pid=\(proc.processIdentifier), version=\(version), binary=\(binary.path)")
+            return true
         } catch {
             log("failed to start server: \(error.localizedDescription)")
+            return false
         }
     }
 }

@@ -12,11 +12,31 @@ const LOGO_PNG: &[u8] = include_bytes!("../../../bunny.png");
 const VERSION: &str = include_str!("../../../.version");
 const HTML_404: &str = "<html><body><h1>404 Not Found</h1></body></html>";
 
+#[derive(Debug)]
+pub enum ServerLaunchError {
+    VolumePath(crate::vault::VaultError),
+    Rocket(Box<rocket::Error>),
+}
+
+impl std::fmt::Display for ServerLaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VolumePath(e) => write!(f, "failed to configure volume: {e}"),
+            Self::Rocket(e) => write!(f, "server launch failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ServerLaunchError {}
+
 fn create_template_env() -> Environment<'static> {
     let mut env = Environment::new();
-    env.add_template("base.j2", include_str!("../templates/base.j2")).expect("invalid base template");
-    env.add_template("bindings.j2", include_str!("../templates/bindings.j2")).expect("invalid bindings template");
-    env.add_template("blob.j2", include_str!("../templates/blob.j2")).expect("invalid blob template");
+    env.add_template("base.j2", include_str!("../templates/base.j2"))
+        .expect("invalid base template");
+    env.add_template("bindings.j2", include_str!("../templates/bindings.j2"))
+        .expect("invalid bindings template");
+    env.add_template("blob.j2", include_str!("../templates/blob.j2"))
+        .expect("invalid blob template");
     env
 }
 
@@ -83,7 +103,8 @@ fn blob_view(id: &str, redirect_url: Option<&str>) -> Result<Redirect, RawHtml<S
     let size = format_size(content.len());
     let env = create_template_env();
     let tmpl = env.get_template("blob.j2").expect("blob template missing");
-    let html = tmpl.render(context! { logo, version, id, content => display, size })
+    let html = tmpl
+        .render(context! { logo, version, id, content => display, size })
         .unwrap_or_else(|e| format!("template error: {e}"));
     Err(RawHtml(html))
 }
@@ -112,8 +133,8 @@ async fn blob_create(body: Data<'_>, config: &State<BunnylolConfig>) -> Result<S
     if content.is_empty() {
         return Err("empty body".into());
     }
-    let v = Vault::from_config()?;
-    let id = v.put("blob", &content)?;
+    let v = Vault::from_config().map_err(|e| e.to_string())?;
+    let id = v.put("blob", &content).map_err(|e| e.to_string())?;
     let url = format!("{}/blob/{id}", config.server.get_display_url());
     Ok(format!("{id}\t{}\t{url}", content.len()))
 }
@@ -157,7 +178,7 @@ fn blob_raw(id: &str) -> Result<RawText<String>, RawText<String>> {
 }
 
 fn blob_content(id: &str) -> Result<Vec<u8>, String> {
-    Vault::get("blob", id)
+    Vault::get("blob", id).map_err(|e| e.to_string())
 }
 
 #[catch(404)]
@@ -168,7 +189,10 @@ fn not_found(req: &Request) -> RawHtml<String> {
     }
 }
 
-pub async fn launch(config: BunnylolConfig) -> Result<(), Box<rocket::Error>> {
+pub async fn launch(config: BunnylolConfig) -> Result<(), ServerLaunchError> {
+    crate::vault::configure_volume_path(config.server.volume_path.as_deref())
+        .map_err(ServerLaunchError::VolumePath)?;
+
     println!(
         "Bunnylol listening on {}:{}",
         config.server.address, config.server.port
@@ -184,13 +208,16 @@ pub async fn launch(config: BunnylolConfig) -> Result<(), Box<rocket::Error>> {
 
     let result = rocket::custom(figment)
         .manage(config)
-        .mount("/", routes![search, health, blob_view, blob_raw, blob_create])
+        .mount(
+            "/",
+            routes![search, health, blob_view, blob_raw, blob_create],
+        )
         .register("/", catchers![not_found])
         .launch()
         .await;
 
     remove_pid_file();
-    result?;
+    result.map_err(|e| ServerLaunchError::Rocket(Box::new(e)))?;
 
     Ok(())
 }
@@ -245,7 +272,9 @@ fn entrypoint_html() -> String {
         .collect();
 
     let env = create_template_env();
-    let tmpl = env.get_template("bindings.j2").expect("bindings template missing");
+    let tmpl = env
+        .get_template("bindings.j2")
+        .expect("bindings template missing");
     let version = VERSION.trim();
     tmpl.render(context! { logo, commands => view, version })
         .expect("template render failed")

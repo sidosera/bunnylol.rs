@@ -51,3 +51,8 @@ pub fn runtime_dir() -> PathBuf {
 pub fn pid_file() -> Option<PathBuf> {
     Some(runtime_dir().join("pid"))
 }
+
+pub fn history_file() -> Option<PathBuf> {
+    let xdg = xdg::BaseDirectories::with_prefix(APP_PREFIX);
+    Some(xdg.get_data_home()?.join("history"))
+}

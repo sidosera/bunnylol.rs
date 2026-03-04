@@ -17,5 +17,5 @@ pub mod server;
 pub use config::BunnylolConfig;
 pub use history::{History, HistoryEntry};
 pub use plugins::CommandInfo;
-pub use vault::{Vault, VaultConfig};
-
+pub use vault::{Vault, VaultError};
+pub use vault::{Vault as Volume, VaultError as VolumeError};

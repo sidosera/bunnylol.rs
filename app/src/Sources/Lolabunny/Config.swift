@@ -8,7 +8,8 @@ enum Config {
     ) ?? ProcessInfo.processInfo.processName
     static let appName = "lolabunny"
     static let displayName = "Lolabunny"
-    static let serverPort: UInt16 = 8085
+    static let serverPort: UInt16 =
+        Config.runtimeUInt16(envKey: "LOLABUNNY_SERVER_PORT", plistKey: "LolabunnyServerPort") ?? 8085
     static let serverBaseURL = URL(string: "http://localhost:\(serverPort)")!
     static func runtimeString(envKey: String, plistKey: String) -> String? {
         runtimeString(envKey: envKey, plistKeys: [plistKey])
@@ -34,6 +35,42 @@ enum Config {
         return nil
     }
 
+    static func runtimeUInt16(envKey: String, plistKey: String) -> UInt16? {
+        guard let raw = runtimeString(envKey: envKey, plistKey: plistKey) else {
+            return nil
+        }
+        return UInt16(raw)
+    }
+
+    static func runtimeInt(envKey: String, plistKey: String) -> Int? {
+        guard let raw = runtimeString(envKey: envKey, plistKey: plistKey) else {
+            return nil
+        }
+        return Int(raw)
+    }
+
+    static func runtimeBool(envKey: String, plistKey: String) -> Bool? {
+        guard let raw = runtimeString(envKey: envKey, plistKey: plistKey)?.lowercased() else {
+            return nil
+        }
+
+        switch raw {
+        case "1", "true", "yes", "on":
+            return true
+        case "0", "false", "no", "off":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    static func runtimeDouble(envKey: String, plistKey: String) -> Double? {
+        guard let raw = runtimeString(envKey: envKey, plistKey: plistKey) else {
+            return nil
+        }
+        return Double(raw)
+    }
+
     enum Icon {
         static let size = NSSize(width: 18, height: 18)
         static let variants = ["bunny", "bunny@2x"]
@@ -47,6 +84,18 @@ enum Config {
     enum Server {
         static let runtimeDir = NSTemporaryDirectory() + ".lolabunny"
         static let pidFile = runtimeDir + "/pid"
+        static let launchArgsSignatureFile = runtimeDir + "/server-args.sig"
+        static let address =
+            Config.runtimeString(envKey: "LOLABUNNY_SERVER_ADDRESS", plistKey: "LolabunnyServerAddress") ?? "127.0.0.1"
+        static let logLevel =
+            Config.runtimeString(envKey: "LOLABUNNY_SERVER_LOG_LEVEL", plistKey: "LolabunnyServerLogLevel") ?? "normal"
+        static let defaultSearch =
+            Config.runtimeString(envKey: "LOLABUNNY_DEFAULT_SEARCH", plistKey: "LolabunnyDefaultSearch") ?? "google"
+        static let historyEnabled =
+            Config.runtimeBool(envKey: "LOLABUNNY_HISTORY_ENABLED", plistKey: "LolabunnyHistoryEnabled") ?? true
+        static let historyMaxEntries =
+            Config.runtimeInt(envKey: "LOLABUNNY_HISTORY_MAX_ENTRIES", plistKey: "LolabunnyHistoryMaxEntries")
+                ?? 1000
         static let downloadChunkDelayMillis: UInt64 = {
             if let raw = Config.runtimeString(
                 envKey: "LOLABUNNY_DOWNLOAD_CHUNK_DELAY_MS",
@@ -71,8 +120,17 @@ enum Config {
             envKey: "LOLABUNNY_UPDATE_PROVIDER_GITHUB_GIST_MANIFEST_FILE",
             plistKey: "LolabunnyUpdateProvider.GitHubGist.ManifestFile"
         )
+        static let volumePath = Config.runtimeString(
+            envKey: "LOLABUNNY_VOLUME_PATH",
+            plistKey: "LolabunnyVolumePath"
+        )
         static let autoCheckInterval: TimeInterval = 24 * 60 * 60
         static let schedulerTickInterval: TimeInterval = 60 * 60
+        static let watchdogIntervalSeconds: TimeInterval =
+            Config.runtimeDouble(
+                envKey: "LOLABUNNY_SERVER_WATCHDOG_INTERVAL_SECONDS",
+                plistKey: "LolabunnyServerWatchdogIntervalSeconds"
+            ) ?? 20
         static let dataRoot: String = {
             if let dirs = try? BaseDirectories(prefixAll: ".lolabunny") {
                 return dirs.dataHomePrefixed.string
