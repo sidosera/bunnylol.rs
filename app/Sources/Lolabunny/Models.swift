@@ -2,20 +2,8 @@ import Foundation
 
 struct ReleaseInfo {
     let version: String
-    let assets: [ReleaseAsset]
+    let archiveURL: URL
 }
-
-struct ReleaseAsset {
-    let name: String
-    let downloadURL: URL
-}
-
-struct ReleaseAssetSelection {
-    let version: String
-    let archive: ReleaseAsset
-    let checksum: ReleaseAsset
-}
-
 
 struct SemVer: Comparable {
     let major: Int
@@ -43,9 +31,9 @@ struct UpdateCheckOutcome {
 }
 
 enum BackendSetupState {
-    case starting
-    case waitingForDownloadPermission(requiredMajor: String)
-    case downloading(phase: String, progress: Double)
-    case ready(version: String)
-    case blocked(message: String)
+    case GettingReady
+    case WaitForDownloadPermission(requiredMajor: String)
+    case DownloadInflight(phase: String, progress: Double)
+    case Ready(version: String)
+    case Failed(message: String)
 }

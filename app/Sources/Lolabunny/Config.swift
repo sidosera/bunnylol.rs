@@ -7,7 +7,7 @@ enum Config {
     ) ?? ProcessInfo.processInfo.processName
     static let appName = "lolabunny"
     static let displayName = "Lolabunny"
-    static let backendPort: UInt16 = Config.plistValue("LolabunnyBackendPort") ?? 8085
+    static let backendPort: UInt16 = Config.plistValue("LolabunnyBackendPort") ?? 18085
     static let backendBaseURL = URL(string: "http://localhost:\(backendPort)")!
 
     static func plistString(_ key: String) -> String? {
@@ -16,14 +16,68 @@ enum Config {
 
     static func plistString(keys: [String]) -> String? {
         for key in keys {
-            if let raw = Bundle.main.object(forInfoDictionaryKey: key) as? String {
-                let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !value.isEmpty {
-                    return value
-                }
+            if let raw = Bundle.main.object(forInfoDictionaryKey: key),
+                let value = normalizePlistStringValue(raw)
+            {
+                return value
+            }
+            if let value = developmentInfoDictionary[key] {
+                return value
             }
         }
         return nil
+    }
+
+    private static func normalizePlistStringValue(_ raw: Any) -> String? {
+        if let string = raw as? String {
+            let value = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        if let number = raw as? NSNumber {
+            let value = number.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    private static let developmentInfoDictionary: [String: String] = {
+        for path in developmentInfoPlistCandidatePaths() {
+            if let raw = NSDictionary(contentsOfFile: path) as? [String: Any] {
+                var parsed: [String: String] = [:]
+                for (key, value) in raw {
+                    if let normalized = normalizePlistStringValue(value) {
+                        parsed[key] = normalized
+                    }
+                }
+                if !parsed.isEmpty {
+                    return parsed
+                }
+            }
+        }
+        return [:]
+    }()
+
+    private static func developmentInfoPlistCandidatePaths() -> [String] {
+        var candidates: [String] = []
+        let sourceURL = URL(fileURLWithPath: #filePath)
+        let appDir = sourceURL
+            .deletingLastPathComponent()   // Lolabunny
+            .deletingLastPathComponent()   // Sources
+            .deletingLastPathComponent()   // app
+        candidates.append(appDir.appendingPathComponent("Info.plist").path)
+
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        candidates.append(cwd.appendingPathComponent("Info.plist").path)
+        candidates.append(cwd.appendingPathComponent("app/Info.plist").path)
+
+        var deduped: [String] = []
+        var seen = Set<String>()
+        for path in candidates {
+            if seen.insert(path).inserted {
+                deduped.append(path)
+            }
+        }
+        return deduped
     }
 
     static func plistValue<T: LosslessStringConvertible>(_ key: String) -> T? {
@@ -67,23 +121,44 @@ enum Config {
         static let defaultSearch = Config.plistString("LolabunnyDefaultSearch") ?? "google"
         static let historyEnabled = Config.plistBool("LolabunnyHistoryEnabled") ?? true
         static let historyMaxEntries: Int = Config.plistValue("LolabunnyHistoryMaxEntries") ?? 1000
-        static let downloadChunkDelayMillis: UInt64 = {
-            if let value: UInt64 = Config.plistValue("LolabunnyDownloadChunkDelayMs") {
-                return value
+        static let updateReleasesURL: URL? = {
+            guard let raw = Config.plistString(
+                keys: ["LolabunnyUpdateReleasesURL", "LolabunnyUpdateArchiveBaseURL"]
+            ) else {
+                return nil
             }
-            // Keep progress visible during local UX iteration.
-            return 120
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return nil
+            }
+
+            if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
+                return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+                    .standardizedFileURL
+            }
+
+            guard
+                let url = URL(string: trimmed),
+                let scheme = url.scheme?.lowercased(),
+                scheme == "http" || scheme == "https" || scheme == "file"
+            else {
+                return nil
+            }
+            return url.isFileURL ? url.standardizedFileURL : url
         }()
-        static let updateProvider = Config.plistString("LolabunnyUpdateProvider")
-        static let updateGitHubGistID = Config.plistString("LolabunnyUpdateProvider.GitHubGist.GistID")
-        static let updateGitHubGistManifestFile = Config.plistString(
-            "LolabunnyUpdateProvider.GitHubGist.ManifestFile"
+        static let updateReleaseTag = Config.plistString(
+            keys: ["LolabunnyUpdateReleaseTag", "LolabunnyUpdateArchiveVersion"]
         )
+        static let updateLocalStreamDelayMillis: UInt64 =
+            Config.plistValue("LolabunnyUpdateLocalStreamDelayMs") ?? 0
         static let volumePath = Config.plistString("LolabunnyVolumePath")
         static let autoCheckInterval: TimeInterval = 24 * 60 * 60
         static let schedulerTickInterval: TimeInterval = 60 * 60
         static let watchdogIntervalSeconds: TimeInterval = {
             Config.plistValue("LolabunnyBackendWatchdogIntervalSeconds") ?? 20
+        }()
+        static let launchHealthTimeoutSeconds: TimeInterval = {
+            Config.plistValue("LolabunnyBackendLaunchHealthTimeoutSeconds") ?? 10
         }()
         static let dataRoot: String = {
             if let dirs = try? BaseDirectories(prefixAll: ".lolabunny") {

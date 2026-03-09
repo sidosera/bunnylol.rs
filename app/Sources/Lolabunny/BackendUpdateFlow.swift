@@ -1,62 +1,25 @@
 import Foundation
 
 extension AppDelegate {
-    func isBackendArchiveAsset(_ name: String) -> Bool {
-        let n = name.lowercased()
-        return n.contains(Config.appName)
-            && (n.contains("darwin") || n.contains("macos"))
-            && n.hasSuffix(".tar.gz")
-            && !n.hasSuffix(".tar.gz.sha256")
+    nonisolated func isBackendUpdateSourceConfigured() -> Bool {
+        Config.Backend.updateReleasesURL != nil
     }
 
-    func matchesArch(_ assetName: String, archToken: String) -> Bool {
-        let n = assetName.lowercased()
-        let t = archToken.lowercased()
-        return n.contains("-\(t).") || n.contains("-\(t)-") || n.hasSuffix("\(t).tar.gz")
-    }
-
-    func selectReleaseAssets(from release: ReleaseInfo) -> ReleaseAssetSelection? {
-        let archives = release.assets.filter { isBackendArchiveAsset($0.name) }
-        guard !archives.isEmpty else {
-            log("latest release \(release.version) has no macOS backend archives")
-            return nil
-        }
-
-        let aliases = architectureAliases()
-        var selectedArchive: ReleaseAsset?
-        for alias in aliases {
-            if let match = archives.first(where: { matchesArch($0.name, archToken: alias) }) {
-                selectedArchive = match
-                break
+    nonisolated func configuredPinnedUpdateVersion() -> String? {
+        if let explicit = Config.Backend.updateReleaseTag {
+            let trimmed = explicit.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && trimmed.caseInsensitiveCompare("latest") != .orderedSame {
+                return trimmed
             }
         }
-        if selectedArchive == nil,
-            let universal = archives.first(where: { $0.name.lowercased().contains("universal") })
-        {
-            selectedArchive = universal
-        }
-        if selectedArchive == nil, archives.count == 1 {
-            selectedArchive = archives[0]
-        }
-        guard let archive = selectedArchive else {
-            log(
-                "no matching backend archive for architecture \(architectureAliases()) in release \(release.version)"
-            )
-            return nil
-        }
+        return nil
+    }
 
-        let checksumName = archive.name + ".sha256"
-        let checksum = release.assets.first { $0.name == checksumName }
-        guard let checksum else {
-            log("checksum asset missing for archive \(archive.name)")
-            return nil
-        }
-
-        return ReleaseAssetSelection(
-            version: release.version.trimmingCharacters(in: .whitespacesAndNewlines),
-            archive: archive,
-            checksum: checksum
-        )
+    func canonicalBackendArchiveName(version: String) -> String {
+        let trimmedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detectedArch = architectureAliases().first ?? architectureLabel().lowercased()
+        let arch = detectedArch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(Config.appName)-\(trimmedVersion)-darwin-\(arch).tar.gz"
     }
 
     func latestCompatibleUpdateVersion(currentVersion: String, latestVersions: [String]) -> String? {
@@ -119,6 +82,9 @@ extension AppDelegate {
     }
 
     func runUpdateCheck(force: Bool, notify: Bool) {
+        guard isBackendUpdateSourceConfigured() else {
+            return
+        }
         guard !isApplyingBackendUpdate else {
             return
         }
@@ -167,34 +133,31 @@ extension AppDelegate {
         }
 
         let latest = latestRelease.version.trimmingCharacters(in: .whitespacesAndNewlines)
-        var backendLatest: String?
-        var checkError: String?
+        let rollingLatestMode = latest.caseInsensitiveCompare("latest") == .orderedSame
 
-        if versionMatchesRequiredMajor(latest, requiredMajor: requiredMajor),
-            compareVersions(latest, backendCurrent) == .orderedDescending
-        {
-            let hasRunnableLocalBackend = resolveLaunchTarget() != nil
-            if let selection = selectReleaseAssets(from: latestRelease) {
-                let installedBinary = backendBinary(for: latest)
-                let lockedBinary = lockedBackendBinary(for: latest)
-                if canLaunchBackendBinary(installedBinary) || canLaunchBackendBinary(lockedBinary) {
-                    backendLatest = latest
-                } else if !hasRunnableLocalBackend {
-                    log("auto-download skipped: no runnable local backend, user permission required")
-                } else if !allowAutomaticBackendDownloads {
-                    log("auto-download skipped: waiting for bootstrap permission")
-                } else if await downloadAndStageBackend(selection: selection) != nil {
-                    backendLatest = latest
-                } else {
-                    checkError = "failed to download backend \(latest)"
-                }
-            }
+        if rollingLatestMode {
+            return UpdateCheckOutcome(
+                checkedAt: now,
+                backendLatestAvailable: nil,
+                error: nil
+            )
         }
 
+        guard versionMatchesRequiredMajor(latest, requiredMajor: requiredMajor),
+              compareVersions(latest, backendCurrent) == .orderedDescending
+        else {
+            return UpdateCheckOutcome(
+                checkedAt: now,
+                backendLatestAvailable: nil,
+                error: nil
+            )
+        }
+
+        log("update available: \(latest) (current: \(backendCurrent))")
         return UpdateCheckOutcome(
             checkedAt: now,
-            backendLatestAvailable: backendLatest,
-            error: checkError
+            backendLatestAvailable: latest,
+            error: nil
         )
     }
 
@@ -235,17 +198,131 @@ extension AppDelegate {
     }
 
     func fetchLatestRelease() async -> ReleaseInfo? {
-        guard let downloader = makeConfiguredGistBackendDownloader(requireManifest: true) else {
+        guard let releasesBaseURL = Config.Backend.updateReleasesURL else {
+            log("missing update releases URL config")
             return nil
         }
-        return await downloader.fetchLatestRelease()
+
+        let version: String
+        if let pinned = configuredPinnedUpdateVersion() {
+            version = pinned
+        } else {
+            guard let latest = await fetchLatestReleaseTag(
+                releasesURL: releasesBaseURL
+            )
+            else {
+                return nil
+            }
+            version = latest
+        }
+
+        let archiveName = canonicalBackendArchiveName(version: version)
+        let archiveURL = releaseArchiveURL(
+            releasesBaseURL: releasesBaseURL,
+            version: version,
+            archiveName: archiveName
+        )
+        return ReleaseInfo(version: version, archiveURL: archiveURL)
+    }
+
+    nonisolated func releaseArchiveURL(
+        releasesBaseURL: URL,
+        version: String,
+        archiveName: String
+    ) -> URL {
+        releasesBaseURL
+            .appendingPathComponent("download")
+            .appendingPathComponent(version)
+            .appendingPathComponent(archiveName)
+    }
+
+    nonisolated func parseReleaseTagFromResolvedURL(_ resolvedURL: URL) -> String? {
+        let marker = "/releases/tag/"
+        guard let markerRange = resolvedURL.path.range(of: marker) else {
+            return nil
+        }
+        var tag = String(resolvedURL.path[markerRange.upperBound...])
+        if let slash = tag.firstIndex(of: "/") {
+            tag = String(tag[..<slash])
+        }
+        let trimmed = (tag.removingPercentEncoding ?? tag)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func fetchLatestReleaseTag(releasesURL: URL) async -> String? {
+        if releasesURL.isFileURL {
+            return readLatestReleaseTagFromMockSource(releasesURL: releasesURL)
+        }
+
+        let latestURL = releasesURL.appendingPathComponent("latest")
+        var request = URLRequest(url: latestURL)
+        request.timeoutInterval = 10
+        request.setValue(Config.displayName, forHTTPHeaderField: "User-Agent")
+
+        let response: URLResponse
+        do {
+            (_, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            log("failed to resolve latest release at \(latestURL.absoluteString): \(error.localizedDescription)")
+            return nil
+        }
+
+        if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
+            log("latest release request failed (\(http.statusCode)) for \(latestURL.absoluteString)")
+            return nil
+        }
+
+        guard let finalURL = response.url else {
+            log("latest release request returned no resolved URL")
+            return nil
+        }
+
+        guard let tag = parseReleaseTagFromResolvedURL(finalURL) else {
+            log("failed to parse release tag from URL \(finalURL.absoluteString)")
+            return nil
+        }
+        return tag
+    }
+
+    nonisolated func parseReleaseTagFromLatestPointer(
+        _ rawValue: String,
+        releasesBaseURL: URL
+    ) -> String? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        if let absolute = URL(string: trimmed), absolute.scheme != nil {
+            return parseReleaseTagFromResolvedURL(absolute) ?? trimmed
+        }
+
+        if let resolved = URL(string: trimmed, relativeTo: releasesBaseURL)?.absoluteURL,
+            let parsed = parseReleaseTagFromResolvedURL(resolved)
+        {
+            return parsed
+        }
+
+        return trimmed
+    }
+
+    func readLatestReleaseTagFromMockSource(releasesURL: URL) -> String? {
+        let pointerURL = releasesURL.appendingPathComponent("latest")
+        guard
+            let contents = try? String(contentsOf: pointerURL, encoding: .utf8),
+            let tag = parseReleaseTagFromLatestPointer(contents, releasesBaseURL: releasesURL)
+        else {
+            log("failed to read mocked latest release pointer at \(pointerURL.path)")
+            return nil
+        }
+        return tag
     }
 
     nonisolated func downloadFileWithBackendDownloader(
         from sourceURL: URL,
-        assetName: String,
         to destinationURL: URL,
-        expectedSHA256Hex: String? = nil,
+        downloader: any BackendDownloader,
         progress: (@MainActor (Double?) -> Void)? = nil
     ) async -> Bool {
         let fm = FileManager.default
@@ -266,30 +343,15 @@ extension AppDelegate {
             }
         }
 
-        let downloader: any BackendDownloader
-        let request: DownloadBackendRequest
-        if shouldUseGistDownloader(for: sourceURL),
-            let gistDownloader = makeConfiguredGistBackendDownloader(requireManifest: false)
-        {
-            downloader = gistDownloader
-            request = DownloadBackendRequest(
-                version: assetName,
-                expectedSHA256Hex: expectedSHA256Hex
-            )
-        } else {
-            downloader = HttpBackendDownloader(
-                baseURL: sourceURL.deletingLastPathComponent(),
-                userAgent: Config.displayName
-            )
-            request = DownloadBackendRequest(
-                version: assetName,
-                expectedSHA256Hex: expectedSHA256Hex,
-                sourceURL: sourceURL
-            )
+        let stream: AsyncThrowingStream<Data, Error>
+        do {
+            stream = try await downloader.download(from: sourceURL)
+        } catch {
+            log("download failed: \(error.localizedDescription)")
+            return false
         }
 
         do {
-            let response = try await downloader.download(request: request)
             let handle = try FileHandle(forWritingTo: tempURL)
             defer {
                 try? handle.close()
@@ -300,22 +362,16 @@ extension AppDelegate {
                 await progress(0.0)
             }
 
-            for try await chunk in response.chunks {
+            for try await chunk in stream {
                 if !chunk.isEmpty {
                     try handle.write(contentsOf: chunk)
                 }
                 chunkCount += 1
 
                 if let progress {
-                    // HTTP chunks do not expose expected total size; use a smooth bounded estimate.
+                    // Stream chunks do not expose expected total size; use a smooth bounded estimate.
                     let synthetic = min(0.95, Double(chunkCount) * 0.03)
                     await progress(synthetic)
-                }
-
-                if Config.Backend.downloadChunkDelayMillis > 0 {
-                    try await Task.sleep(
-                        nanoseconds: Config.Backend.downloadChunkDelayMillis * 1_000_000
-                    )
                 }
             }
 
@@ -337,48 +393,16 @@ extension AppDelegate {
         }
     }
 
-    nonisolated private func shouldUseGistDownloader(for sourceURL: URL) -> Bool {
-        guard Config.Backend.updateProvider?.caseInsensitiveCompare("GitHubGist") == .orderedSame else {
-            return false
+    nonisolated func makeBackendDownloader(for sourceURL: URL) -> any BackendDownloader {
+        if sourceURL.isFileURL {
+            return makeLocalhostBackendDownloader()
         }
-        guard let host = sourceURL.host?.lowercased() else {
-            return false
-        }
-        return host == "gist.githubusercontent.com" || host.hasSuffix(".githubusercontent.com")
+        return HttpBackendDownloader(userAgent: Config.displayName)
     }
 
-    nonisolated private func makeConfiguredGistBackendDownloader(
-        requireManifest: Bool
-    ) -> GistBackendDownloader? {
-        guard let provider = Config.Backend.updateProvider else {
-            log("missing update provider config")
-            return nil
-        }
-        guard provider.caseInsensitiveCompare("GitHubGist") == .orderedSame else {
-            log("unsupported update provider: \(provider)")
-            return nil
-        }
-        guard let gistID = Config.Backend.updateGitHubGistID else {
-            log("missing GitHubGist update gist ID config")
-            return nil
-        }
-
-        let manifest = Config.Backend.updateGitHubGistManifestFile
-        if requireManifest, manifest == nil {
-            log("missing GitHubGist update manifest file config")
-            return nil
-        }
-
-        let downloader = GistBackendDownloader(
-            gistID: gistID,
-            manifestFileName: manifest,
-            userAgent: Config.displayName
+    nonisolated private func makeLocalhostBackendDownloader() -> LocalhostBackendDownloader {
+        LocalhostBackendDownloader(
+            streamDelayMillis: Config.Backend.updateLocalStreamDelayMillis
         )
-        if downloader == nil, let manifest {
-            log("invalid GitHubGist update config: gistID=\(gistID), manifest=\(manifest)")
-        } else if downloader == nil {
-            log("invalid GitHubGist update config: gistID=\(gistID)")
-        }
-        return downloader
     }
 }

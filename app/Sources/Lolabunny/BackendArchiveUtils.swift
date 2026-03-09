@@ -37,29 +37,112 @@ enum BackendArchiveUtils {
         return nil
     }
 
-    static func verifyDownloadedArchive(
-        archiveURL: URL,
-        checksumURL: URL,
-        archiveName: String
+    static func verifyExtractedBinary(
+        binaryURL: URL,
+        checksumURL: URL
     ) -> Bool {
         guard let checksumContents = try? String(contentsOf: checksumURL, encoding: .utf8) else {
-            log("failed reading checksum file \(checksumURL.path)")
+            log("failed reading extracted checksum file \(checksumURL.path)")
             return false
         }
+        let binaryName = binaryURL.lastPathComponent
         guard
-            let expected = parseExpectedSHA256(contents: checksumContents, archiveName: archiveName)
+            let expected = parseExpectedSHA256(contents: checksumContents, archiveName: binaryName)
         else {
-            log("checksum file did not include a valid hash for \(archiveName)")
+            log("checksum file did not include a valid hash for \(binaryName)")
             return false
         }
-        guard let actual = sha256Hex(for: archiveURL) else {
+        guard let actual = sha256Hex(for: binaryURL) else {
             return false
         }
         guard expected == actual else {
-            log("checksum mismatch for \(archiveName): expected \(expected), got \(actual)")
+            log("checksum mismatch for \(binaryName): expected \(expected), got \(actual)")
             return false
         }
         return true
+    }
+
+    static func canLaunchBinary(_ binaryURL: URL) -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            return false
+        }
+        let proc = Process()
+        proc.executableURL = binaryURL
+        proc.arguments = ["--version"]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+        } catch {
+            log("binary not launchable (\(binaryURL.path)): \(error.localizedDescription)")
+            return false
+        }
+        proc.waitUntilExit()
+        if proc.terminationStatus != 0 {
+            log("binary version probe failed (\(binaryURL.path)), exit=\(proc.terminationStatus)")
+            return false
+        }
+        return true
+    }
+
+    static func detectedVersion(from binaryURL: URL) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: binaryURL.path) else {
+            return nil
+        }
+        guard let output = versionProbeOutput(for: binaryURL) else {
+            return nil
+        }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        if let range = trimmed.range(
+            of: #"v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?"#,
+            options: .regularExpression
+        ) {
+            let token = String(trimmed[range])
+            return token.hasPrefix("v") ? token : "v\(token)"
+        }
+        return nil
+    }
+
+    static func prepareDownloadedArchive(
+        archiveURL: URL,
+        extractedDir: URL,
+        binaryName: String,
+        requestedVersion: String,
+        rollingLatestMode: Bool
+    ) -> (resolvedVersion: String, extractedBinary: URL)? {
+        guard extractArchive(archiveURL, to: extractedDir) else {
+            return nil
+        }
+
+        let extractedBinary = extractedDir.appendingPathComponent(binaryName)
+        let extractedChecksum = extractedDir.appendingPathComponent("\(binaryName).sha256")
+        guard verifyExtractedBinary(binaryURL: extractedBinary, checksumURL: extractedChecksum) else {
+            log("downloaded backend failed checksum verification")
+            return nil
+        }
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: extractedBinary.path)
+        } catch {
+            log("failed to set executable permissions: \(error.localizedDescription)")
+        }
+
+        guard canLaunchBinary(extractedBinary) else {
+            log("downloaded backend binary is not runnable for current architecture")
+            return nil
+        }
+
+        if rollingLatestMode {
+            guard let detected = detectedVersion(from: extractedBinary) else {
+                log("failed to resolve backend version from downloaded latest archive")
+                return nil
+            }
+            return (detected, extractedBinary)
+        }
+        return (requestedVersion, extractedBinary)
     }
 
     static func archiveEntryOutputURL(baseDir: URL, entryName: String) -> URL? {
@@ -146,5 +229,30 @@ enum BackendArchiveUtils {
             log("failed to extract archive: \(error.localizedDescription)")
             return false
         }
+    }
+
+    private static func versionProbeOutput(for binaryURL: URL) -> String? {
+        let proc = Process()
+        proc.executableURL = binaryURL
+        proc.arguments = ["--version"]
+        let out = Pipe()
+        let err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        do {
+            try proc.run()
+        } catch {
+            log("binary version detection failed (\(binaryURL.path)): \(error.localizedDescription)")
+            return nil
+        }
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            log("binary version detection failed (\(binaryURL.path)), exit=\(proc.terminationStatus)")
+            return nil
+        }
+
+        let outputData = out.fileHandleForReading.readDataToEndOfFile()
+            + err.fileHandleForReading.readDataToEndOfFile()
+        return String(data: outputData, encoding: .utf8)
     }
 }

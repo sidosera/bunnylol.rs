@@ -4,22 +4,21 @@ import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, ObservableObject {
-    @Published var backendSetupState: BackendSetupState = .starting
+    @Published var backendSetupState: BackendSetupState = .GettingReady
     @Published var isApplyingBackendUpdate = false
     @Published var isBootstrappingBackend = false
     @Published var enableLaunchAtLogin = false
-    @Published var menuRenderNonce: UInt64 = 0
 
     private var hasStarted = false
     var isCheckingUpdates = false
     var bootstrapPromptPosted = false
-    var allowAutomaticBackendDownloads = false
     var pendingBootstrapBackendRequiredMajor: String?
     var updateState = UpdateState()
     var updateTimer: Timer?
     var backendWatchdogTimer: Timer?
     var backendProcess: Process?
     var isStartingBackend = false
+    var lastBackendLaunchAttemptVersion: String?
     lazy var statusBarIcon: NSImage = makeStatusBarIcon()
     var managedBackendRoot: URL {
         URL(fileURLWithPath: Config.Backend.installRoot, isDirectory: true)
@@ -46,7 +45,11 @@ final class AppDelegate: NSObject, ObservableObject {
             await startBackend()
         }
         scheduleBackendWatchdog()
-        scheduleUpdateChecks()
-        runUpdateCheck(force: false, notify: false)
+        if isBackendUpdateSourceConfigured() {
+            scheduleUpdateChecks()
+            runUpdateCheck(force: false, notify: false)
+        } else {
+            log("backend update checks disabled: update source is not configured")
+        }
     }
 }

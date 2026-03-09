@@ -80,27 +80,24 @@ extension AppDelegate {
         }
     }
 
-    func canLaunchBackendBinary(_ binary: URL) -> Bool {
-        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
-            return false
+    func clearConfiguredBackendVersion() {
+        let configURL = backendConfigURL
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            return
         }
-        let proc = Process()
-        proc.executableURL = binary
-        proc.arguments = ["--version"]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
         do {
-            try proc.run()
+            try FileManager.default.removeItem(at: configURL)
         } catch {
-            log("binary not launchable (\(binary.path)): \(error.localizedDescription)")
-            return false
+            log("failed to clear backend config: \(error.localizedDescription)")
         }
-        proc.waitUntilExit()
-        if proc.terminationStatus != 0 {
-            log("binary version probe failed (\(binary.path)), exit=\(proc.terminationStatus)")
-            return false
-        }
-        return true
+    }
+
+    func canLaunchBackendBinary(_ binary: URL) -> Bool {
+        BackendArchiveUtils.canLaunchBinary(binary)
+    }
+
+    func detectedBackendVersion(from binary: URL) -> String? {
+        BackendArchiveUtils.detectedVersion(from: binary)
     }
 
     func installedBackendVersions() -> [String] {

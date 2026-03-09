@@ -4,50 +4,81 @@ import Testing
 
 @MainActor
 struct UpdateLogicTests {
-    private func makeAsset(_ name: String) -> ReleaseAsset {
-        ReleaseAsset(
-            name: name,
-            downloadURL: URL(string: "https://example.com/\(name)")!
+    @Test func canonicalArchiveNameIncludesVersionAndExtension() {
+        let app = AppDelegate()
+        let archiveName = app.canonicalBackendArchiveName(version: "v2.4.6")
+        #expect(archiveName.contains("v2.4.6"))
+        #expect(archiveName.hasPrefix("\(Config.appName)-"))
+        #expect(archiveName.hasSuffix(".tar.gz"))
+    }
+
+    @Test func updateSourceConfigIsAvailableInPackageRuntime() {
+        let app = AppDelegate()
+        #expect(app.isBackendUpdateSourceConfigured())
+    }
+
+    @Test func parseReleaseTagFromResolvedURLReadsVersionFromTagPath() {
+        let app = AppDelegate()
+        let url = URL(string: "https://example.com/releases/tag/v2.4.6")!
+        #expect(app.parseReleaseTagFromResolvedURL(url) == "v2.4.6")
+    }
+
+    @Test func parseReleaseTagFromResolvedURLRejectsNonTagPath() {
+        let app = AppDelegate()
+        let latestURL = URL(string: "https://example.com/releases/latest")!
+        #expect(app.parseReleaseTagFromResolvedURL(latestURL) == nil)
+    }
+
+    @Test func parseReleaseTagFromLatestPointerUnderstandsRedirectStyle() {
+        let app = AppDelegate()
+        let base = URL(fileURLWithPath: "/tmp/release-fixtures/releases", isDirectory: true)
+        #expect(
+            app.parseReleaseTagFromLatestPointer(
+                "/releases/tag/v3.2.1",
+                releasesBaseURL: base
+            ) == "v3.2.1"
+        )
+        #expect(
+            app.parseReleaseTagFromLatestPointer(
+                "v3.2.1",
+                releasesBaseURL: base
+            ) == "v3.2.1"
         )
     }
 
-    @Test func selectReleaseAssetsTrimsReleaseVersion() {
+    @Test func releaseArchiveURLUsesDownloadTagPathForLocalAndRemote() {
         let app = AppDelegate()
-        let archive = "lolabunny-v1.2.3-darwin-universal.tar.gz"
-        let checksum = archive + ".sha256"
-        let release = ReleaseInfo(
-            version: " v1.2.3 \n",
-            assets: [makeAsset(archive), makeAsset(checksum)]
+        let archiveName = "lolabunny-v3.2.1-darwin-arm64.tar.gz"
+        let remoteBase = URL(string: "https://example.com/releases")!
+        let localBase = URL(fileURLWithPath: "/tmp/release-fixtures/releases", isDirectory: true)
+
+        let remote = app.releaseArchiveURL(
+            releasesBaseURL: remoteBase,
+            version: "v3.2.1",
+            archiveName: archiveName
+        )
+        let local = app.releaseArchiveURL(
+            releasesBaseURL: localBase,
+            version: "v3.2.1",
+            archiveName: archiveName
         )
 
-        let selection = app.selectReleaseAssets(from: release)
-        #expect(selection?.version == "v1.2.3")
+        #expect(remote.absoluteString.hasSuffix("/releases/download/v3.2.1/\(archiveName)"))
+        #expect(local.path.hasSuffix("/releases/download/v3.2.1/\(archiveName)"))
     }
 
-    @Test func selectReleaseAssetsReturnsUniversalArchiveWithChecksum() {
+    @Test func readLatestReleaseTagFromMockSourceReadsPointerFile() throws {
         let app = AppDelegate()
-        let archive = "lolabunny-v1.2.3-darwin-universal.tar.gz"
-        let checksum = archive + ".sha256"
-        let release = ReleaseInfo(
-            version: "v1.2.3",
-            assets: [makeAsset(archive), makeAsset(checksum)]
-        )
+        let fm = FileManager.default
+        let releasesDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("lolabunny-mock-releases-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: releasesDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: releasesDir) }
 
-        let selection = app.selectReleaseAssets(from: release)
-        #expect(selection?.archive.name == archive)
-        #expect(selection?.checksum.name == checksum)
-        #expect(selection?.version == "v1.2.3")
-    }
+        let latestPointer = releasesDir.appendingPathComponent("latest")
+        try "/releases/tag/v4.5.6\n".write(to: latestPointer, atomically: true, encoding: .utf8)
 
-    @Test func selectReleaseAssetsRequiresChecksum() {
-        let app = AppDelegate()
-        let archive = "lolabunny-v1.2.3-darwin-universal.tar.gz"
-        let release = ReleaseInfo(
-            version: "v1.2.3",
-            assets: [makeAsset(archive)]
-        )
-
-        #expect(app.selectReleaseAssets(from: release) == nil)
+        #expect(app.readLatestReleaseTagFromMockSource(releasesURL: releasesDir) == "v4.5.6")
     }
 
     @Test func versionComparisonUnderstandsSemver() {
@@ -116,13 +147,21 @@ struct UpdateLogicTests {
         )
     }
 
+    @Test func startupLaunchFailureIsClassifiedAsStartFailure() {
+        let app = AppDelegate()
+        #expect(app.isBackendStartFailure("launch failed"))
+        #expect(app.isBackendStartFailure("start failed"))
+        #expect(app.isBackendStartFailure("Backend failed to start"))
+        #expect(!app.isBackendStartFailure("download failed"))
+    }
+
     @Test func downloadBackendNowImmediatelyShowsProgressState() {
         let app = AppDelegate()
-        app.backendSetupState = .waitingForDownloadPermission(requiredMajor: "1")
+        app.backendSetupState = .WaitForDownloadPermission(requiredMajor: "1")
 
         app.downloadBackendNow()
 
-        guard case .downloading(let phase, let progress) = app.backendSetupState else {
+        guard case .DownloadInflight(let phase, let progress) = app.backendSetupState else {
             Issue.record("Expected .downloading state immediately after clicking download.")
             return
         }

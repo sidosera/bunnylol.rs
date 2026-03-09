@@ -28,14 +28,14 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>LolabunnyUpdateProvider</key>
-    <string>GitHubGist</string>
-    <key>LolabunnyUpdateProvider.GitHubGist.GistID</key>
-    <string></string>
-    <key>LolabunnyUpdateProvider.GitHubGist.ManifestFile</key>
-    <string>manifest.json</string>
+    <key>LolabunnyUpdateArchiveBaseURL</key>
+    <string>https://github.com/sidosera/lolabunny.app/releases</string>
+    <key>LolabunnyUpdateArchiveVersion</key>
+    <string>latest</string>
+    <key>LolabunnyUpdateLocalStreamDelayMs</key>
+    <string>0</string>
     <key>LolabunnyBackendPort</key>
-    <string>8085</string>
+    <string>18085</string>
     <key>LolabunnyBackendAddress</key>
     <string>127.0.0.1</string>
     <key>LolabunnyBackendLogLevel</key>

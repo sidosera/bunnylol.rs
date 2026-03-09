@@ -104,9 +104,12 @@ jobs:
 
       - name: Package binary
         run: |
-          cp build/cargo/${{ matrix.rust_target }}/release/lolabunny .
-          tar czf "lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz" lolabunny
-          shasum -a 256 "lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz" > "lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz.sha256"
+          rm -rf package-root
+          mkdir -p package-root
+          cp build/cargo/${{ matrix.rust_target }}/release/lolabunny package-root/lolabunny
+          (cd package-root && shasum -a 256 lolabunny > lolabunny.sha256)
+          versioned_archive="lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz"
+          tar czf "${versioned_archive}" -C package-root lolabunny lolabunny.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -114,7 +117,6 @@ jobs:
           name: lolabunny-server-${{ env.VERSION }}-${{ matrix.arch }}
           path: |
             lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz
-            lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz.sha256
           retention-days: 90
 
       - name: Upload to release
@@ -125,7 +127,6 @@ jobs:
           name: ${{ env.VERSION }}
           files: |
             lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz
-            lolabunny-${{ env.VERSION }}-darwin-${{ matrix.arch }}.tar.gz.sha256
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -247,114 +248,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-server-delivery-gist:
-    name: Publish Server Delivery Gist
-    runs-on: macos-15
-    needs: build-server
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set version from nearest tag and commit offset
-        run: |
-          exact_tag="$(git describe --tags --match "v*" --exact-match 2>/dev/null || true)"
-          if [[ -n "$exact_tag" && "$exact_tag" != *+* ]]; then
-            latest_tag="$exact_tag"
-            offset="0"
-            version="$exact_tag"
-          else
-            latest_tag="$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)"
-            latest_tag="${latest_tag%%+*}"
-            if [ -z "$latest_tag" ]; then
-              latest_tag="v0.0.0"
-              offset="$(git rev-list --count HEAD)"
-            else
-              offset="$(git rev-list --count "${latest_tag}..HEAD")"
-            fi
-            version="${latest_tag}+${offset}"
-          fi
-          echo "VERSION=${version}" >> "$GITHUB_ENV"
-          echo "BASE_TAG=${latest_tag}" >> "$GITHUB_ENV"
-          echo "VERSION_OFFSET=${offset}" >> "$GITHUB_ENV"
-
-      - name: Download server artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: lolabunny-server-${{ env.VERSION }}-*
-          path: delivery-assets
-          merge-multiple: true
-
-      - name: Validate gist secrets
-        env:
-          GITHUB_GIST_ID: ${{ secrets.GITHUB_GIST_ID }}
-          GITHUB_GIST_TOKEN: ${{ secrets.GITHUB_GIST_TOKEN }}
-        run: |
-          [ -n "$GITHUB_GIST_ID" ] || { echo "::error::Missing GITHUB_GIST_ID secret"; exit 1; }
-          [ -n "$GITHUB_GIST_TOKEN" ] || { echo "::error::Missing GITHUB_GIST_TOKEN secret"; exit 1; }
-
-      - name: Publish server files and manifest to gist
-        env:
-          GITHUB_GIST_ID: ${{ secrets.GITHUB_GIST_ID }}
-          GITHUB_GIST_TOKEN: ${{ secrets.GITHUB_GIST_TOKEN }}
-          VERSION: ${{ env.VERSION }}
-        run: |
-          git clone "https://x-access-token:${GITHUB_GIST_TOKEN}@gist.github.com/${GITHUB_GIST_ID}.git" gist-repo
-          shopt -s nullglob
-          files=(delivery-assets/lolabunny-"${VERSION}"-darwin-*.tar.gz delivery-assets/lolabunny-"${VERSION}"-darwin-*.tar.gz.sha256)
-          [ ${#files[@]} -gt 0 ] || { echo "::error::No server archive files found for ${VERSION}"; exit 1; }
-          cp -f "${files[@]}" gist-repo/
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          version = os.environ["VERSION"]
-          repo = Path("gist-repo")
-          manifest_path = repo / "manifest.json"
-
-          manifest = {"latest": version, "releases": []}
-          if manifest_path.exists():
-              try:
-                  existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-                  if isinstance(existing, dict):
-                      manifest = existing
-              except Exception:
-                  pass
-
-          assets = sorted([
-              p.name for p in repo.glob(f"lolabunny-{version}-darwin-*.tar.gz")
-          ] + [
-              p.name for p in repo.glob(f"lolabunny-{version}-darwin-*.tar.gz.sha256")
-          ])
-
-          releases = manifest.get("releases", [])
-          if not isinstance(releases, list):
-              releases = []
-          normalized = []
-          for release in releases:
-              if not isinstance(release, dict):
-                  continue
-              rv = str(release.get("version", "")).strip()
-              ra = release.get("assets", [])
-              if not rv or not isinstance(ra, list):
-                  continue
-              if rv == version:
-                  continue
-              normalized.append({"version": rv, "assets": [str(a).strip() for a in ra if str(a).strip()]})
-
-          normalized.append({"version": version, "assets": assets})
-          manifest["latest"] = version
-          manifest["releases"] = normalized
-          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          PY
-          cd gist-repo
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No gist changes to publish"
-            exit 0
-          fi
-          git add .
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -m "Update lolabunny delivery files for ${VERSION}"
-          git push
