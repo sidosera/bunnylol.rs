@@ -8,7 +8,9 @@ enum Config {
     static let appName = "lolabunny"
     static let displayName = "Lolabunny"
     static let backendPort: UInt16 = Config.plistValue("LolabunnyBackendPort") ?? 18085
-    static let backendBaseURL = URL(string: "http://localhost:\(backendPort)")!
+    /// Same host as `serve --address` (see `LolabunnyBackendAddress`). Avoid `localhost` so health checks do not hit IPv6 while the server listens on IPv4.
+    static let backendAddress: String = Config.plistString("LolabunnyBackendAddress") ?? "127.0.0.1"
+    static let backendBaseURL = URL(string: "http://\(backendAddress):\(backendPort)")!
 
     static func plistString(_ key: String) -> String? {
         plistString(keys: [key])
@@ -116,7 +118,7 @@ enum Config {
         static let runtimeDir = NSTemporaryDirectory() + ".lolabunny"
         static let pidFile = runtimeDir + "/pid"
         static let launchArgsSignatureFile = runtimeDir + "/backend-args.sig"
-        static let address = Config.plistString("LolabunnyBackendAddress") ?? "127.0.0.1"
+        static let address = Config.backendAddress
         static let logLevel = Config.plistString("LolabunnyBackendLogLevel") ?? "normal"
         static let defaultSearch = Config.plistString("LolabunnyDefaultSearch") ?? "google"
         static let historyEnabled = Config.plistBool("LolabunnyHistoryEnabled") ?? true

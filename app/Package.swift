@@ -22,8 +22,9 @@ let package = Package(
                 "SWCompression",
                 .product(name: "XDG", package: "swift-xdg"),
             ],
-            resources: [
-                .copy("Resources/bunny.png"),
+            exclude: [
+                // Icons ship in the app bundle via cmake/bundle.cmake (Contents/Resources); not SPM resources.
+                "Resources",
             ]
         ),
         .testTarget(
